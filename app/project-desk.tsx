@@ -1612,27 +1612,31 @@ function SourceReader({
   const [quote, setQuote] = useState<string | null>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
-    let active = true;
+    if (!active) return;
+    setUrl('');
+    setBlob(null);
+    setOriginalText(null);
+    let current = true;
     let objectUrl = '';
     void readOriginal(source.id)
       .then(async (data) => {
         const text = source.media_type.startsWith('text/')
           ? await data.text()
           : null;
-        if (!active) return;
+        if (!current) return;
         objectUrl = URL.createObjectURL(data);
         setBlob(data);
         setUrl(objectUrl);
         setOriginalText(text);
       })
       .catch(() => {
-        if (active) report('无法载入原件，请刷新重试。');
+        if (current) report('无法载入原件，请刷新重试。');
       });
     return () => {
-      active = false;
+      current = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [source.id, source.object_path, source.media_type, report]);
+  }, [active, source.id, source.object_path, source.media_type, report]);
   useEffect(() => {
     setRegion(null);
   }, [versionId, page, location]);

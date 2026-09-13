@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { LiteratureStore } from '@/lib/literature-store';
 import { authenticate, failure, HttpError, jsonBody } from '@/lib/server';
 import { decrypt } from '@/lib/crypto';
 import {
@@ -16,6 +17,9 @@ const inputSchema = z.object({
   id: z.uuid(),
   project_id: z.uuid(),
   query: z.string().trim().min(1).max(2_000),
+  mode: z.enum(['catalog', 'ai']).default('catalog'),
+  expand_chinese: z.boolean().default(true),
+  use_exa: z.boolean().default(false),
   locale: z.enum(['zh-CN', 'en']).default('zh-CN'),
 });
 
@@ -24,7 +28,7 @@ const queryPlanSchema = z.object({
 });
 
 const system =
-  'You are a humanities source-search planner. Turn only the researcher-provided search request into one to three concise catalog queries using historically relevant names, aliases, offices, events, dates, and language variants. Do not answer the research question and do not invent results. Return only a JSON object with the shape {"queries":["..."]}.';
+  'You are a humanities source-search planner. Turn only the researcher-provided search request into one to three concise catalog queries using historically relevant names, aliases, offices, events, dates, and language variants. For Chinese topics preserve at least one Chinese query, and add an English query if useful. Distinguish the historical period from publication dates; never constrain publication dates to the period being studied. Treat aliases as search variants, not proven identities. Do not answer the research question and do not invent results. Return only a JSON object with the shape {"queries":["..."]}.';
 
 function readSavedResult(value: string | null): TaskResult | null {
   if (!value) return null;
@@ -35,11 +39,78 @@ function readSavedResult(value: string | null): TaskResult | null {
   }
 }
 
+export async function GET(request: Request) {
+  try {
+    const { store } = await authenticate(request);
+    const params = new URL(request.url).searchParams;
+    const project = z.uuid().parse(params.get('project_id'));
+    const literature = new LiteratureStore(store);
+    const id = params.get('id');
+    const session = id
+      ? await literature.session(project, z.uuid().parse(id))
+      : null;
+    if (id && !session) throw new HttpError(404, '检索记录不存在。');
+    return Response.json(
+      id
+        ? {
+            result: readSavedResult(session?.result || null),
+            query: session?.query,
+            status: session?.status,
+          }
+        : { sessions: await literature.history(project) },
+      { headers: { 'Cache-Control': 'private, no-store' } },
+    );
+  } catch (error) {
+    return failure(error);
+  }
+}
 export async function POST(request: Request) {
+  let pending:
+    | { literature: LiteratureStore; project: string; id: string }
+    | undefined;
   try {
     const { user, store, settings } = await authenticate(request);
     const input = inputSchema.parse(await jsonBody(request));
+    if (
+      input.mode === 'catalog' &&
+      (input.query.split('\n').filter((q) => q.trim()).length > 3 ||
+        input.query.split('\n').some((q) => q.trim().length > 200))
+    )
+      throw new HttpError(
+        400,
+        '直接搜索最多 3 行，每行 200 字；较长的问题请使用 AI 整理。',
+      );
     await store.project(input.project_id, 'write');
+    const literature = new LiteratureStore(
+      store,
+      settings.FOLIOTRACE_ENCRYPTION_KEY,
+    );
+    const saved = await literature.begin(
+      input.project_id,
+      input.id,
+      input.query,
+    );
+    if (saved) return Response.json({ result: saved, session_id: input.id });
+    pending = { literature, project: input.project_id, id: input.id };
+    const search = (queries: string[]) =>
+      searchSourceCandidates(store, {
+        project_id: input.project_id,
+        version_ids: [],
+        queries,
+        external: true,
+        locale: input.locale,
+        expand_chinese: input.expand_chinese,
+        use_exa: input.use_exa,
+        catalog_search: (catalog, query) =>
+          literature.search(input.project_id, catalog, query),
+      });
+    if (input.mode === 'catalog') {
+      const result = await search(
+        input.query.split('\n').filter(Boolean).slice(0, 3),
+      );
+      await literature.finish(input.project_id, input.id, result);
+      return Response.json({ result, session_id: input.id });
+    }
     const previous = await store.run(input.id);
     if (previous) {
       if (previous.project_id !== input.project_id)
@@ -86,7 +157,7 @@ export async function POST(request: Request) {
           model_id: model.model_id,
           prompt_version: 1,
           feature: 'source_discovery',
-          effort: 'high',
+          effort: 'low',
         },
       },
       price,
@@ -97,7 +168,7 @@ export async function POST(request: Request) {
       const run = await store.run(input.id);
       const result = readSavedResult(run?.result || null);
       if (run?.status === 'succeeded' && result)
-        return Response.json({ result, run });
+        return Response.json({ result, run, session_id: input.id });
       throw new HttpError(409, run?.error || '这次搜索无法继续。');
     }
 
@@ -114,7 +185,7 @@ export async function POST(request: Request) {
         prompt: input.query,
         outputFormat: 'json',
         maxOutput: price.max_output,
-        effort: 'high',
+        effort: 'low',
         taskKind: 'search',
         priceCeiling: {
           input: price.input_rate,
@@ -122,13 +193,8 @@ export async function POST(request: Request) {
         },
       });
       const plan = queryPlanSchema.parse(JSON.parse(response.text));
-      const result = await searchSourceCandidates(store, {
-        project_id: input.project_id,
-        version_ids: [],
-        queries: plan.queries,
-        external: true,
-        locale: input.locale,
-      });
+      const result = await search(plan.queries);
+      await literature.finish(input.project_id, input.id, result);
       const run = await finishDirectRun(
         store,
         input.id,
@@ -143,7 +209,7 @@ export async function POST(request: Request) {
         },
         called,
       );
-      return Response.json({ result, run });
+      return Response.json({ result, run, session_id: input.id });
     } catch (error) {
       const message =
         error instanceof SyntaxError || error instanceof z.ZodError
@@ -158,6 +224,8 @@ export async function POST(request: Request) {
       throw new HttpError(502, message);
     }
   } catch (error) {
+    if (pending)
+      await pending.literature.finish(pending.project, pending.id, null);
     return failure(error);
   }
 }

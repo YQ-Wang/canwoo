@@ -24,3 +24,7 @@ The public Adams example includes three historical paragraphs from Charles Franc
 ## Franklin research benchmark metadata
 
 `tests/fixtures/franklin/{Papers,People,Places}.csv`: Claire Rydell Arcenas and Caroline Winterer (2016), _Correspondence Network of Benjamin Franklin During the London Years: Letters, People, Places_, Stanford Digital Repository. [Source and citation](https://purl.stanford.edu/wb524rz2367). Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); CSV files are unmodified. The accompanying counts are derived audits. No linked letter transcriptions or images are included. See the fixture README for scope and hashes.
+
+## Chinese search variants
+
+[opencc-js](https://github.com/nk2028/opencc-js), pinned in `package-lock.json`, is distributed under the MIT license. Its bundled OpenCC dictionaries retain Apache-2.0 attribution; see the package LICENSE, THIRD_PARTY_LICENSES.md and LICENSES/Apache-2.0.txt. Conversion expands search queries only and does not alter original research materials.

@@ -259,6 +259,13 @@ before(async () => {
   ).split('\n'))
     if (statement.trim() && !statement.trim().startsWith('--'))
       await db.prepare(statement).run();
+  for (const statement of (
+    await fs.readFile(
+      new URL('../drizzle/0025_literature_discovery.sql', import.meta.url),
+      'utf8',
+    )
+  ).split('\n'))
+    if (statement.trim()) await db.prepare(statement).run();
 });
 after(async () => {
   await mf?.dispose();
@@ -3614,10 +3621,16 @@ void test('directed discovery sends only bounded queries to fixed catalogs, reco
     async (url, init) => {
       calls++;
       const target = new URL(url instanceof Request ? url.url : url.toString());
-      assert.ok(['api.crossref.org', 'www.loc.gov'].includes(target.hostname));
+      assert.ok(
+        ['api.crossref.org', 'api.openalex.org', 'www.loc.gov'].includes(
+          target.hostname,
+        ),
+      );
       assert.equal(init?.redirect, 'manual');
       assert.equal(new Headers(init?.headers).has('Authorization'), false);
       assert.doesNotMatch(target.toString(), /22 September/);
+      if (target.hostname === 'api.openalex.org')
+        return Response.json({ results: [] });
       return target.hostname === 'www.loc.gov'
         ? new Response('unavailable', { status: 503 })
         : Response.json({
@@ -3633,7 +3646,7 @@ void test('directed discovery sends only bounded queries to fixed catalogs, reco
           });
     },
   );
-  assert.equal(calls, 2);
+  assert.equal(calls, 3);
   assert.ok(
     result.citations.every((c) => c.page === 1),
     'discovery must respect the pages actually selected',
