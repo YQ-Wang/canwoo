@@ -30,7 +30,7 @@
     "research:benchmark": "python3 scripts/benchmark-franklin.py --check"
   },
   "dependencies": {
-    "@base-ui/react": "1.7.0",
+    "@base-ui/react": "1.8.0",
     "@better-auth/drizzle-adapter": "^1.7.2",
     "@citation-js/core": "^0.8.2",
     "@citation-js/plugin-bibtex": "^0.8.2",
